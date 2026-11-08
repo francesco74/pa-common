@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pa-common"
+version = "0.1.0"
+description = "Codice comune ai progetti per la pubblica amministrazione di Francesco Bertozzi (atti-pa, rag): conversione dei documenti in Markdown con OCR, controlli sui file in ingresso, pulizia del testo"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Francesco Bertozzi", email = "info@bertozzifrancesco.it" }]
+# solo il minimo: il resto arriva con gli extra, così ogni immagine installa ciò che usa
+dependencies = [
+    "asn1crypto>=1.5",   # buste di firma .p7m (ingresso)
+]
+
+[project.optional-dependencies]
+# PDF in Markdown (PyMuPDF è AGPL-3.0: per questo anche pa-common lo è)
+pdf = ["pymupdf>=1.27,<2", "pymupdf4llm>=1.27,<2"]
+# fogli di calcolo: xlsx, xls, ods
+fogli = ["openpyxl>=3.1", "xlrd>=2.0", "odfpy>=1.4"]
+# OCR: limite di richieste, nuovi tentativi, immagini; più l'SDK del fornitore scelto
+ocr = ["aiolimiter>=1.1", "tenacity>=8.2", "pillow>=10"]
+ocr-gemini = ["pa-common[ocr]", "google-genai>=1.0"]
+ocr-openai = ["pa-common[ocr]", "openai>=1.40,<3"]      # anche vLLM
+ocr-anthropic = ["pa-common[ocr]", "anthropic>=0.40"]
+ocr-mistral = ["pa-common[ocr]", "mistralai>=2,<3"]
+ocr-ollama = ["pa-common[ocr]", "ollama>=0.5"]
+# conversione completa con tutti i fornitori di OCR
+tutto = ["pa-common[pdf,fogli,ocr-gemini,ocr-openai,ocr-anthropic,ocr-mistral,ocr-ollama]"]
+test = ["pytest>=8"]
+
+[project.urls]
+Sorgente = "https://github.com/francesco74/pa-common"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
