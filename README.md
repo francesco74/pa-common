@@ -19,7 +19,7 @@ La libreria non legge variabili d'ambiente: ogni progetto passa la propria confi
 Nel `requirements.txt` del progetto, con la versione (tag) e gli extra che servono:
 
 ```
-pa-common[pdf,fogli,ocr-gemini] @ git+https://github.com/francesco74/pa-common@v0.1.0
+pa-common[pdf,fogli,ocr-gemini] @ git+https://github.com/francesco74/pa-common@v0.1.1
 ```
 
 | Extra | Per |

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pa-common"
-version = "0.1.0"
+version = "0.1.1"
 description = "Codice comune ai progetti per la pubblica amministrazione di Francesco Bertozzi (atti-pa, rag): conversione dei documenti in Markdown con OCR, controlli sui file in ingresso, pulizia del testo"
 readme = "README.md"
 requires-python = ">=3.11"

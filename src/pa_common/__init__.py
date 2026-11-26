@@ -15,4 +15,4 @@ Moduli:
 La libreria non legge variabili d'ambiente: ogni progetto passa la propria configurazione.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
