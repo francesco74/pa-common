@@ -43,8 +43,8 @@ testo = await in_markdown(contenuto, "determina.pdf.p7m", ocr=ocr, max_pagine=30
 ```
 
 Da codice sincrono: `in_markdown_sync(...)`. Errori: `pa_common.errori` (`FileNonValido`,
-`ConversioneNonRiuscita` e sottoclassi come `OcrNonDisponibile`, `TroppePagine`,
-`TempoScaduto`).
+`ConversioneNonRiuscita` e sottoclassi come `OcrNonDisponibile`, `DocumentoScansionato`,
+`TroppePagine`, `TempoScaduto`).
 
 ### Scelte
 
@@ -57,6 +57,12 @@ Da codice sincrono: `in_markdown_sync(...)`. Errori: `pa_common.errori` (`FileNo
 - **OCR**: una pagina va all'OCR se ha meno di 50 caratteri, o più di 1500 tracciati
   vettoriali e meno di 1000 caratteri. Senza OCR configurato, un PDF scansionato è rifiutato
   con `OcrNonDisponibile`.
+- **Scansioni bloccanti** (`blocca_scansioni=True`, es. per le verifiche della trasparenza,
+  dove una scansione è già una non conformità): niente OCR; una pagina è una scansione se ha
+  meno di 50 caratteri ed è coperta per almeno metà da un'immagine che non si ripete in altre
+  pagine (la carta intestata come sfondo non conta), e solleva `DocumentoScansionato` con le
+  pagine. Le pagine quasi vuote, i disegni e i PDF ricercabili (scansione con il testo
+  dell'OCR incorporato) danno il testo che hanno.
 
 ## Sviluppo
 

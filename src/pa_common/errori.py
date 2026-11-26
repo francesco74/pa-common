@@ -38,6 +38,17 @@ class OcrNonDisponibile(ConversioneNonRiuscita):
     """Il documento (o una sua pagina) è un'immagine e nessun OCR è configurato."""
 
 
+class DocumentoScansionato(ConversioneNonRiuscita):
+    """Il documento ha pagine scansionate (immagini senza testo) e si è chiesto di non
+    leggerle (`blocca_scansioni`): es. le verifiche della trasparenza, dove una scansione è
+    già una non conformità. `pagine`: numerate da 1; `totale`: pagine del documento."""
+
+    def __init__(self, messaggio: str, pagine: list[int], totale: int):
+        super().__init__(messaggio)
+        self.pagine = pagine
+        self.totale = totale
+
+
 class TempoScaduto(ConversioneNonRiuscita, TimeoutError):
     """La conversione ha superato il tempo massimo."""
 

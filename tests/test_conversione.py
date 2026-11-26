@@ -10,7 +10,9 @@ from pa_common.conversione import Statistiche, Tempi, in_markdown, in_markdown_s
 from pa_common.conversione.fogli import fogli_in_markdown, numero_italiano
 from pa_common.conversione.odt import odt_in_markdown
 from pa_common.conversione.pdf import senza_intestazioni
-from pa_common.errori import ConversioneNonRiuscita, FormatoNonSupportato, OcrNonDisponibile, TroppePagine
+from pa_common.errori import (
+    ConversioneNonRiuscita, DocumentoScansionato, FormatoNonSupportato, OcrNonDisponibile, TroppePagine,
+)
 
 serve_libreoffice = pytest.mark.skipif(shutil.which("soffice") is None, reason="LibreOffice non installato")
 
@@ -104,6 +106,40 @@ def test_pdf_tutto_scansionato_senza_ocr():
         converti(pdf(["", ""], scansionate={0, 1}), "atto.pdf")
 
 
+def test_pdf_blocca_scansioni():
+    # pagina 2 scansionata (immagine senza testo), 4 scansionata con OCR incorporato
+    # (ricercabile), 3 con la sola firma, 5 bianca, 6 con un disegno vettoriale
+    pagine = [_corpo(1), "", "Il Dirigente", _corpo(4), "", "", _corpo(7)]
+    contenuto = pdf(pagine, immagini={1, 3}, scansionate={5})
+    with pytest.raises(DocumentoScansionato) as e:
+        converti(contenuto, "atto.pdf", blocca_scansioni=True)
+    assert (e.value.pagine, e.value.totale) == ([2], 7)
+    assert isinstance(e.value, ConversioneNonRiuscita)
+
+    # senza la scansione: le pagine con poco testo danno il loro testo, niente OCR
+    contenuto = pdf([_corpo(1), "Il Dirigente", _corpo(3), "", ""], immagini={2}, scansionate={4})
+    statistiche = Statistiche()
+    testo = converti(contenuto, "atto.pdf", blocca_scansioni=True, statistiche=statistiche)
+    assert "Il Dirigente" in testo and "punto h della pagina 3" in testo
+    assert statistiche.pagine_ocr == 0
+    with pytest.raises(OcrNonDisponibile):  # senza l'opzione le stesse pagine vanno all'OCR
+        converti(contenuto, "atto.pdf")
+
+
+def test_pdf_carta_intestata_non_e_una_scansione():
+    # stessa immagine di sfondo su ogni pagina: l'ultima, con la sola firma, non è una scansione
+    contenuto = pdf([_corpo(1), _corpo(2), "Il Dirigente"], sfondo=True)
+    assert "Il Dirigente" in converti(contenuto, "atto.pdf", blocca_scansioni=True)
+
+
+def test_immagine_con_blocca_scansioni():
+    import pymupdf
+
+    png = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False).tobytes("png")
+    with pytest.raises(DocumentoScansionato):
+        converti(png, "foto.png", blocca_scansioni=True, ocr=OcrFinto())
+
+
 def test_pdf_firmato_e_troppe_pagine():
     contenuto = pdf([_corpo(n) for n in range(3)])
     assert "punto h della pagina 2" in converti(busta_p7m(contenuto), "atto.pdf.p7m")
@@ -172,6 +208,72 @@ def test_fogli_ods():
     uscita = io.BytesIO()
     documento.save(uscita)
     assert fogli_in_markdown(uscita.getvalue(), ".ods") == "| Voce | Importo |\n|---|---|\n| Tributi | 1.000,00 |\n"
+
+
+def test_fogli_xlsx_nascosti():
+    import openpyxl
+
+    libro = openpyxl.Workbook()
+    libro.active.title = "Pagamenti"
+    libro.active.append(["Beneficiario", "Importo"])
+    libro.active.append(["Ditta Rossi", 10])
+    for nome, stato in (("Appoggio", "hidden"), ("Codici", "veryHidden")):
+        foglio = libro.create_sheet(nome)
+        foglio.append(["Codice"])
+        foglio.append(["segreto"])
+        foglio.sheet_state = stato
+    uscita = io.BytesIO()
+    libro.save(uscita)
+    testo = fogli_in_markdown(uscita.getvalue(), ".xlsx")
+    # un solo foglio visibile: senza titolo, con la nota sui nascosti
+    assert testo.startswith("| Beneficiario | Importo |")
+    assert "segreto" not in testo
+    assert testo.endswith("Fogli nascosti non letti: Appoggio, Codici\n")
+
+
+def _ods(*fogli: tuple[str, list[list[tuple[str, str | None]]], bool]) -> bytes:
+    """ODS con i fogli (nome, righe di celle (testo, valore numerico o None), nascosto)."""
+    from odf.opendocument import OpenDocumentSpreadsheet
+    from odf.style import Style, TableProperties
+    from odf.table import Table, TableCell, TableRow
+    from odf.text import P
+
+    documento = OpenDocumentSpreadsheet()
+    nascosto = Style(name="ta2", family="table")
+    nascosto.addElement(TableProperties(display="false"))
+    documento.automaticstyles.addElement(nascosto)
+    for nome, righe, invisibile in fogli:
+        tabella = Table(name=nome, stylename=nascosto if invisibile else None)
+        for valori in righe:
+            riga = TableRow()
+            for testo, valore in valori:
+                cella = TableCell(valuetype="float", value=valore) if valore is not None else TableCell()
+                cella.addElement(P(text=testo))
+                riga.addElement(cella)
+            tabella.addElement(riga)
+        documento.spreadsheet.addElement(tabella)
+    uscita = io.BytesIO()
+    documento.save(uscita)
+    return uscita.getvalue()
+
+
+def test_fogli_ods_nascosti_e_annotazioni():
+    contenuto = _ods(
+        ("Report", [[("Anno", None), ("Importo", None)], [("2026", "2026"), ("650,50", "650.5")], [("2026", "2026"), ("7", "7.0")]], False),
+        ("'file://server/dati.xls'#Soggetti", [[("Codice", None)], [("", "320533")]], True),
+    )
+    testo = fogli_in_markdown(contenuto, ".ods", annota_formato=True)
+    # annotati solo i numeri visualizzati diversamente da come sono memorizzati
+    assert "| 2026 | 650.5 [Visualizzato come: 650,50] |" in testo
+    assert "| 2026 | 7 |" in testo
+    assert "320533" not in testo
+    assert testo.endswith("Fogli nascosti non letti: Soggetti (collegato a un file esterno)\n")
+
+
+def test_fogli_solo_nascosti():
+    contenuto = _ods(("Visibile", [], False), ("Dati", [[("x", None)]], True))
+    with pytest.raises(ConversioneNonRiuscita, match="non contiene dati visibili"):
+        fogli_in_markdown(contenuto, ".ods")
 
 
 @serve_libreoffice

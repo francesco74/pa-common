@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 
 from .. import ingresso, processo
-from ..errori import ConversioneNonRiuscita, FormatoNonSupportato, OcrNonDisponibile
+from ..errori import ConversioneNonRiuscita, DocumentoScansionato, FormatoNonSupportato, OcrNonDisponibile
 from .fogli import FORMATI as FORMATI_FOGLI
 from .fogli import fogli_in_markdown
 from .libreoffice import LibreOffice
@@ -68,6 +68,7 @@ async def in_markdown(
     annota_formato: bool = False,
     statistiche: Statistiche | None = None,
     verifica_ingresso: bool = True,
+    blocca_scansioni: bool = False,
 ) -> str:
     """Testo Markdown del documento `contenuto` di nome `nome` (l'estensione dice il formato).
 
@@ -79,7 +80,9 @@ async def in_markdown(
       massimi (vedi `conversione.pdf`);
     - `annota_formato`: nei fogli, i numeri riportano anche il formato interno;
     - `statistiche`: riempito con le pagine e quelle passate dall'OCR;
-    - `verifica_ingresso`: sbusta le firme e controlla il contenuto (`ingresso.verifica`).
+    - `verifica_ingresso`: sbusta le firme e controlla il contenuto (`ingresso.verifica`);
+    - `blocca_scansioni`: niente OCR, le scansioni (pagine del PDF o immagini) sollevano
+      `DocumentoScansionato` (es. per le verifiche della trasparenza; vedi `conversione.pdf`).
 
     Solleva `FileNonValido` (ingresso) o `ConversioneNonRiuscita` e sottoclassi.
     """
@@ -99,6 +102,7 @@ async def in_markdown(
             tempi=tempi,
             in_processo=in_processo,
             statistiche=statistiche,
+            blocca_scansioni=blocca_scansioni,
         )
     if est == ".odt":
         return await asyncio.to_thread(odt_in_markdown, contenuto)
@@ -112,6 +116,8 @@ async def in_markdown(
             return await asyncio.to_thread(processo.esegui, _fogli, (contenuto, est, annota_formato), tempi.semplice)
         return await asyncio.to_thread(_fogli, contenuto, est, annota_formato)
     if est in IMMAGINI:
+        if blocca_scansioni:
+            raise DocumentoScansionato("Il file è un'immagine", [1], 1)
         if ocr is None:
             raise OcrNonDisponibile("Le immagini si leggono solo con l'OCR, che non è configurato")
         if statistiche is not None:

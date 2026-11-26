@@ -11,6 +11,13 @@ precedente supera il suo tempo massimo:
 2. PyMuPDF4LLM in modalità semplice, senza ONNX;
 3. OCR di tutte le pagine, rasterizzate.
 
+Con `blocca_scansioni` le pagine non vanno all'OCR: quelle che sono scansioni
+(`pagina_scansionata`: poco testo e coperte in buona parte da un'immagine che non sia uno
+sfondo ripetuto in più pagine, come la carta intestata) fermano la
+conversione con `DocumentoScansionato`; le altre con poco testo (l'ultima con la sola firma,
+una pagina bianca, un grafico vettoriale) danno il testo che hanno. Un PDF ricercabile (la
+scansione con il testo dell'OCR incorporato) ha il testo e non è una scansione.
+
 Intestazioni e piè di pagina: PyMuPDF4LLM li tiene (la sua esclusione automatica scarta
 anche i titoli in cima alla pagina, es. "Art. 22 Dirigenti") e poi si tolgono le righe ai
 bordi che si ripetono in almeno metà delle pagine, e i numeri di pagina.
@@ -25,7 +32,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from ..errori import ConversioneNonRiuscita, OcrNonDisponibile, TempoScaduto, TroppePagine
+from ..errori import ConversioneNonRiuscita, DocumentoScansionato, OcrNonDisponibile, TempoScaduto, TroppePagine
 from .. import processo
 
 log = logging.getLogger("pa_common.pdf")
@@ -34,6 +41,7 @@ MIN_CARATTERI = 50  # sotto, la pagina è un'immagine
 MAX_VETTORI = 1500  # sopra, con meno di MAX_CARATTERI_VETTORIALE caratteri: disegno o testo vettorializzato
 MAX_CARATTERI_VETTORIALE = 1000
 ZOOM_OCR = 2  # risoluzione delle pagine rasterizzate per l'OCR (2 = 144 dpi)
+SOGLIA_SCANSIONE = 0.5  # superficie della pagina coperta da immagini, oltre la quale (con poco testo) è una scansione
 
 
 @dataclass
@@ -67,6 +75,41 @@ def ispeziona_pagina(pagina, ritaglio: int = 0):
     caratteri = len(pagina.get_text(sort=True, clip=area).strip())
     serve_ocr = caratteri < MIN_CARATTERI or (vettori > MAX_VETTORI and caratteri < MAX_CARATTERI_VETTORIALE)
     return area, caratteri, vettori, serve_ocr
+
+
+def copertura_immagini(pagina, escluse: frozenset[int] = frozenset()) -> float:
+    """Frazione della pagina coperta da immagini raster (0-1), senza quelle in `escluse`
+    (xref). Gli scanner possono dividere la pagina in più strisce: si sommano."""
+    import pymupdf
+
+    r = pagina.rect
+    if r.is_empty:
+        return 0.0
+    coperta = 0.0
+    for info in pagina.get_image_info(xrefs=True):
+        if info.get("xref") in escluse:
+            continue
+        b = pymupdf.Rect(info["bbox"]) & r
+        if not b.is_empty:
+            coperta += b.width * b.height
+    return min(1.0, coperta / (r.width * r.height))
+
+
+def immagini_ripetute(documento) -> frozenset[int]:
+    """Immagini (xref) presenti in più pagine: sfondi e carta intestata, non scansioni (ogni
+    pagina scansionata ha la sua immagine)."""
+    pagine_per_immagine: dict[int, int] = {}
+    for pagina in documento:
+        for xref in {img[0] for img in pagina.get_images()}:
+            pagine_per_immagine[xref] = pagine_per_immagine.get(xref, 0) + 1
+    return frozenset(x for x, n in pagine_per_immagine.items() if x and n > 1)
+
+
+def pagina_scansionata(pagina, caratteri: int, sfondi: frozenset[int] = frozenset()) -> bool:
+    """Una scansione: poco testo nativo e un'immagine su buona parte della pagina, che non
+    sia uno sfondo ripetuto (`immagini_ripetute`). Più stretta di `serve_ocr`, che manda
+    all'OCR anche le pagine quasi vuote e i disegni."""
+    return caratteri < MIN_CARATTERI and copertura_immagini(pagina, sfondi) >= SOGLIA_SCANSIONE
 
 
 def _apri(contenuto: bytes):
@@ -120,9 +163,12 @@ def _markdown_pagina(documento, numero: int) -> str:
     return testo.replace("<br>", "\n")
 
 
-def estrai_pagine(contenuto: bytes, layout_ai: bool = True, ritaglio: int = 0) -> list[tuple[str, object]]:
-    """Pagina per pagina ("testo", markdown) oppure ("immagine", png da trascrivere).
-    Lavoro di CPU: da eseguire in un processo separato (`processo.esegui`)."""
+def estrai_pagine(
+    contenuto: bytes, layout_ai: bool = True, ritaglio: int = 0, blocca_scansioni: bool = False
+) -> list[tuple[str, object]]:
+    """Pagina per pagina ("testo", markdown) oppure ("immagine", png da trascrivere). Con
+    `blocca_scansioni` niente immagini: ("scansione", None) per le scansioni, il testo per le
+    altre. Lavoro di CPU: da eseguire in un processo separato (`processo.esegui`)."""
     import pymupdf
     import pymupdf4llm
 
@@ -131,10 +177,16 @@ def estrai_pagine(contenuto: bytes, layout_ai: bool = True, ritaglio: int = 0) -
         pymupdf4llm.use_layout(layout_ai)
     pagine: list[tuple[str, object]] = []
     with _apri(contenuto) as documento:
+        sfondi = immagini_ripetute(documento) if blocca_scansioni else frozenset()
         for numero in range(len(documento)):
             pagina = documento[numero]
             area, caratteri, vettori, serve_ocr = ispeziona_pagina(pagina, ritaglio)
-            if serve_ocr:
+            if blocca_scansioni:
+                if serve_ocr and pagina_scansionata(pagina, caratteri, sfondi):
+                    pagine.append(("scansione", None))
+                else:
+                    pagine.append(("testo", _markdown_pagina(documento, numero)))
+            elif serve_ocr:
                 log.debug("Pagina %d all'OCR (%d caratteri, %d vettori)", numero + 1, caratteri, vettori)
                 immagine = pagina.get_pixmap(matrix=pymupdf.Matrix(ZOOM_OCR, ZOOM_OCR), alpha=False, clip=area)
                 pagine.append(("immagine", immagine.tobytes("png")))
@@ -211,11 +263,13 @@ async def pdf_in_markdown(
     tempi: Tempi | None = None,
     in_processo: bool = True,
     statistiche: Statistiche | None = None,
+    blocca_scansioni: bool = False,
 ) -> str:
     """Testo Markdown del PDF.
 
     `ocr`: un `pa_common.ocr.Ocr` per le pagine scansionate; senza, un PDF con pagine
-    scansionate solleva `OcrNonDisponibile`. `separatore`: tra una pagina e l'altra (es.
+    scansionate solleva `OcrNonDisponibile`. `blocca_scansioni`: niente OCR, le pagine che
+    sono scansioni sollevano `DocumentoScansionato` (vedi sopra). `separatore`: tra una pagina e l'altra (es.
     "\\n\\n---\\n\\n" per tenerle distinte). `in_processo=False` estrae nel processo corrente,
     senza tempi massimi (per i test). Solleva `ConversioneNonRiuscita` e sottoclassi.
     """
@@ -227,14 +281,14 @@ async def pdf_in_markdown(
         raise TroppePagine(f"Il PDF ha {pagine_totali} pagine, oltre il limite di {max_pagine}")
 
     try:
-        pagine = await _esegui(estrai_pagine, (contenuto, True), tempi.layout_ai, in_processo)
+        pagine = await _esegui(estrai_pagine, (contenuto, True, 0, blocca_scansioni), tempi.layout_ai, in_processo)
     except TempoScaduto:
         log.warning("PDF: estrazione con layout AI oltre %.0f s, provo la modalità semplice", tempi.layout_ai)
         try:
-            pagine = await _esegui(estrai_pagine, (contenuto, False), tempi.semplice, in_processo)
+            pagine = await _esegui(estrai_pagine, (contenuto, False, 0, blocca_scansioni), tempi.semplice, in_processo)
         except TempoScaduto:
             log.warning("PDF: anche la modalità semplice oltre %.0f s, OCR di tutte le pagine", tempi.semplice)
-            if ocr is None:
+            if ocr is None or blocca_scansioni:
                 raise OcrNonDisponibile("PDF troppo complesso da leggere e OCR non configurato") from None
             try:
                 immagini = await _esegui(rasterizza, (contenuto,), tempi.rasterizza, in_processo)
@@ -242,6 +296,11 @@ async def pdf_in_markdown(
                 raise TempoScaduto("PDF non leggibile: tempo scaduto a ogni livello di estrazione") from e
             pagine = [("immagine", png) for png in immagini]
 
+    scansioni = [n for n, (tipo, _) in enumerate(pagine, start=1) if tipo == "scansione"]
+    if scansioni:
+        raise DocumentoScansionato(
+            f"{len(scansioni)} pagine su {len(pagine)} sono scansioni (immagini senza testo)", scansioni, len(pagine)
+        )
     da_trascrivere = sum(1 for tipo, _ in pagine if tipo == "immagine")
     if da_trascrivere and ocr is None:
         if da_trascrivere == len(pagine):

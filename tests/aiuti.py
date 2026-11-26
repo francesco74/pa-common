@@ -66,14 +66,32 @@ def odt(contenuto_xml: str = _CONTENT) -> bytes:
     return uscita.getvalue()
 
 
-def pdf(pagine: list[str], intestazione: str | None = None, scansionate: set[int] = frozenset()) -> bytes:
+def pdf(
+    pagine: list[str], intestazione: str | None = None, scansionate: set[int] = frozenset(),
+    immagini: set[int] = frozenset(), sfondo: bool = False,
+) -> bytes:
     """PDF con una pagina per testo; `intestazione` ripetuta in cima a ogni pagina; le pagine
-    in `scansionate` sono solo un rettangolo disegnato (nessun testo: vanno all'OCR)."""
+    in `scansionate` sono solo un rettangolo disegnato (nessun testo: vanno all'OCR); quelle
+    in `immagini` hanno un'immagine raster a tutta pagina sotto il loro testo (una scansione,
+    o un PDF ricercabile se il testo c'è); con `sfondo` tutte le pagine hanno la stessa
+    immagine a tutta pagina (la carta intestata)."""
     import pymupdf
 
     documento = pymupdf.open()
+    xref_sfondo = 0
     for i, testo in enumerate(pagine):
         pagina = documento.new_page()
+        if sfondo:
+            if xref_sfondo:
+                pagina.insert_image(pagina.rect, xref=xref_sfondo)
+            else:
+                carta = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 80), False)
+                carta.set_rect(carta.irect, (255, 255, 250))
+                xref_sfondo = pagina.insert_image(pagina.rect, pixmap=carta)
+        if i in immagini:
+            foglio = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 80), False)
+            foglio.set_rect(foglio.irect, (240 - i, 240, 235))  # ogni scansione è un'immagine diversa
+            pagina.insert_image(pagina.rect, pixmap=foglio)
         if i in scansionate:
             pagina.draw_rect(pymupdf.Rect(50, 50, 500, 700), color=(0, 0, 0), fill=(0.9, 0.9, 0.9))
             continue
